@@ -313,6 +313,8 @@ export function panelHtml(cspSource: string): string {
 
   function add(el) {
     ui.history.prepend(el);
+    // Bound retained live history as well as the extension's replay log.
+    while (ui.history.childElementCount > 400) ui.history.lastElementChild.remove();
     return el;
   }
 

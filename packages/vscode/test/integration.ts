@@ -150,6 +150,31 @@ export async function run(): Promise<void> {
   await c.end()
   console.log(`interrupted after typing ${JSON.stringify(typed)}`)
 
+  // A second workspace folder must report edits just like the first one does.
+  const secondRoot = fs.mkdtempSync(path.join(path.dirname(root), "second-"))
+  assert.ok(vscode.workspace.updateWorkspaceFolders(vscode.workspace.workspaceFolders!.length, 0, {
+    uri: vscode.Uri.file(secondRoot), name: "Second root",
+  }))
+  await until(() => vscode.workspace.workspaceFolders!.some((folder) => folder.uri.fsPath === secondRoot))
+  const secondFile = path.join(secondRoot, "scratch.ts")
+  await c.start("multi-root interrupt test", secondRoot)
+  await c.step([{ move: { file: "scratch.ts", line: 1, to: "line_end" } }, { type: `${alphabet}▌` }])
+  const secondPending = c.step([{ type: "!▌" }])
+  await sleep(1500)
+  const secondDoc = await vscode.workspace.openTextDocument(secondFile)
+  await insertAsProgrammer(secondDoc.uri, new vscode.Position(0, 0), "// mine\n")
+  const secondReport = await secondPending
+  assert.equal(secondReport.batches[0]?.status, "interrupted")
+  assert.equal(secondReport.batches[1]?.status, "discarded")
+  assert.equal(secondReport.events[0]?.kind, "edit")
+  const secondRest = secondReport.batches[0]?.unplayed?.[0]
+  const secondLeft = secondRest && "type" in secondRest ? secondRest.type.replace("▌", "") : ""
+  const secondTyped = alphabet.slice(0, alphabet.length - secondLeft.length)
+  assert.ok(secondTyped.length > 0 && secondLeft.length > 0 && alphabet.endsWith(secondLeft))
+  assert.equal(secondDoc.getText(), "// mine\n" + secondTyped)
+  await c.end()
+  console.log("multi-root programmer edits interrupt playback")
+
   // An agent connecting the way a harness does: the launcher, over stdio, from the project folder.
   await api.ready
   const transport = new StdioClientTransport({

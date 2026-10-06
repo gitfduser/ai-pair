@@ -90,12 +90,25 @@ export class Bridge {
     const send = (m: EditorMessage) => {
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(m))
     }
+    const reject = (reason: string) => {
+      send({ type: "rejected", reason })
+      ws.close()
+    }
+    const helloTimer = setTimeout(() => ws.terminate(), 5000)
+    // Invalid frames and oversized payloads are emitted as socket errors by ws.
+    ws.on("error", () => ws.terminate())
 
     ws.on("message", (data) => {
       let m: RelayMessage
       try {
-        m = JSON.parse(String(data)) as RelayMessage
+        const value: unknown = JSON.parse(String(data))
+        if (!relayMessage(value)) {
+          reject("Invalid pairing message.")
+          return
+        }
+        m = value
       } catch {
+        reject("Invalid pairing message.")
         return
       }
       if (!authenticated) {
@@ -110,6 +123,7 @@ export class Bridge {
           ws.close()
         } else {
           authenticated = true
+          clearTimeout(helloTimer)
           send({ type: "welcome" })
         }
         return
@@ -119,6 +133,10 @@ export class Bridge {
       } else if (m.type === "return") {
         if (this.owner === ws) this.controller.restore(m.report)
       } else if (m.type === "call") {
+        if (calls.has(m.id)) {
+          reject("A call with this ID is already pending.")
+          return
+        }
         const abort = new AbortController()
         calls.set(m.id, abort)
         this.dispatch(ws, m.tool, m.args ?? {}, abort.signal)
@@ -137,6 +155,7 @@ export class Bridge {
     })
 
     ws.on("close", () => {
+      clearTimeout(helloTimer)
       for (const abort of calls.values()) abort.abort()
       if (this.owner === ws) {
         this.owner = null
@@ -180,6 +199,58 @@ export class Bridge {
     const b = Buffer.from(this.token)
     return a.length === b.length && timingSafeEqual(a, b)
   }
+}
+
+function object(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+function callId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1
+}
+
+/** Validate the envelope before an unauthenticated peer can reach any property access. */
+function relayMessage(value: unknown): value is RelayMessage {
+  if (!object(value)) return false
+  switch (value.type) {
+    case "hello":
+      return typeof value.token === "string" && typeof value.protocolVersion === "number"
+    case "cancel":
+      return callId(value.id)
+    case "call":
+      return callId(value.id) && typeof value.tool === "string" &&
+        ["start", "step", "listen", "end", "read"].includes(value.tool) &&
+        (value.args === undefined || object(value.args))
+    case "return":
+      return returnedReport(value.report)
+    default:
+      return false
+  }
+}
+
+/** Returned reports are inserted into controller state, so validate their consumed fields too. */
+function returnedReport(value: unknown): boolean {
+  if (!object(value) || (value.turn !== "agent" && value.turn !== "user")) return false
+  return Array.isArray(value.batches) && value.batches.every((batch: unknown) => {
+    if (!object(batch) || !callId(batch.id) || !["completed", "interrupted", "failed", "discarded"].includes(String(batch.status))) return false
+    if (batch.code !== undefined && !code(batch.code)) return false
+    return true
+  }) && Array.isArray(value.events) && value.events.every((event: unknown) => {
+    if (!object(event)) return false
+    switch (event.kind) {
+      case "message": return typeof event.text === "string"
+      case "edit": return typeof event.file === "string" && typeof event.diff === "string" && (event.by === "programmer" || event.by === "other")
+      case "turn": return (event.to === "agent" || event.to === "user") && (event.message === undefined || typeof event.message === "string")
+      case "interrupt":
+      case "end": return true
+      default: return false
+    }
+  })
+}
+
+function code(value: unknown): boolean {
+  return object(value) && typeof value.file === "string" && Array.isArray(value.lines) &&
+    value.lines.every((line: unknown) => object(line) && callId(line.number) && typeof line.text === "string")
 }
 
 function optionalString(v: unknown): string | undefined {

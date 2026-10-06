@@ -77,8 +77,10 @@ export function findWindows(folders: string[], dir: string): { folder: string; w
 }
 
 type Pending = {
+  ws: WebSocket
   tool: ToolName
   cancelled: boolean
+  cleanup: () => void
   resolve: (result: unknown) => void
   reject: (error: RelayError) => void
 }
@@ -93,6 +95,8 @@ const REPORTING: ReadonlySet<ToolName> = new Set(["step", "listen", "end"])
 export class EditorLink {
   private ws: WebSocket | null = null
   private connecting: Promise<WebSocket> | null = null
+  private readonly sockets = new Set<WebSocket>()
+  private generation = 0
   private nextId = 1
   private readonly pending = new Map<number, Pending>()
   private folder: string
@@ -108,40 +112,53 @@ export class EditorLink {
   locate(folders: string[]): string {
     const { folder } = findWindows(folders, this.dir)
     if (folder !== this.folder) {
+      this.close()
       this.folder = folder
-      this.ws?.close()
-      this.ws = null
     }
     return folder
   }
 
   async call(tool: ToolName, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-    const ws = await this.connect()
+    if (signal?.aborted) throw new RelayError("cancelled", "The call was cancelled.")
+    const ws = await waitForConnection(this.connect(), signal)
+    if (signal?.aborted) throw new RelayError("cancelled", "The call was cancelled.")
     const id = this.nextId++
     return new Promise((resolve, reject) => {
-      const pending: Pending = { tool, cancelled: false, resolve, reject }
+      const abort = () => {
+        pending.cancelled = true
+        if (this.pending.has(id) && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "cancel", id }))
+      }
+      const pending: Pending = {
+        ws, tool, cancelled: false, resolve, reject,
+        cleanup: () => signal?.removeEventListener("abort", abort),
+      }
       this.pending.set(id, pending)
-      ws.send(JSON.stringify({ type: "call", id, tool, args }))
-      signal?.addEventListener(
-        "abort",
-        () => {
-          pending.cancelled = true
-          if (this.pending.has(id) && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "cancel", id }))
-        },
-        { once: true },
-      )
+      signal?.addEventListener("abort", abort, { once: true })
+      try {
+        ws.send(JSON.stringify({ type: "call", id, tool, args }))
+      } catch (e) {
+        this.pending.delete(id)
+        pending.cleanup()
+        reject(e)
+      }
     })
   }
 
   close(): void {
-    this.ws?.close()
+    this.generation++
+    this.ws = null
+    this.connecting = null
+    for (const ws of this.sockets) ws.terminate()
   }
 
   private connect(): Promise<WebSocket> {
     if (this.ws?.readyState === WebSocket.OPEN) return Promise.resolve(this.ws)
-    this.connecting ??= this.open().finally(() => {
-      this.connecting = null
-    })
+    if (!this.connecting) {
+      const connecting = this.open(this.generation).finally(() => {
+        if (this.connecting === connecting) this.connecting = null
+      })
+      this.connecting = connecting
+    }
     return this.connecting
   }
 
@@ -149,11 +166,12 @@ export class EditorLink {
    * Tries the matching windows best first. A window's file can outlive it when VS Code didn't shut
    * down cleanly, and its pid can then belong to another process, so an unreachable one is skipped.
    */
-  private async open(): Promise<WebSocket> {
+  private async open(generation: number): Promise<WebSocket> {
     let first: unknown
     for (const window of findWindows([this.folder], this.dir).windows) {
+      if (generation !== this.generation) throw new RelayError("no_editor", "The connection was closed.")
       try {
-        return await this.openWindow(window)
+        return await this.openWindow(window, generation)
       } catch (e) {
         first ??= e
       }
@@ -161,47 +179,87 @@ export class EditorLink {
     throw first
   }
 
-  private openWindow(window: Discovery): Promise<WebSocket> {
+  private openWindow(window: Discovery, generation: number): Promise<WebSocket> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${window.port}`, { handshakeTimeout: HANDSHAKE_MS })
+      this.sockets.add(ws)
       let welcomed = false
+      let failed = false
+      const fail = (message: string) => {
+        if (welcomed || failed) return
+        failed = true
+        clearTimeout(timer)
+        reject(new RelayError("no_editor", message))
+        ws.terminate()
+      }
+      // ws.handshakeTimeout ends at HTTP upgrade. Also bound hello/welcome.
+      const timer = setTimeout(() => fail("The editor did not complete the pairing handshake."), HANDSHAKE_MS)
       const settle = (id: number) => {
         const p = this.pending.get(id)
+        if (p?.ws !== ws) return undefined
         this.pending.delete(id)
+        p.cleanup()
         return p
       }
       ws.on("open", () => {
         ws.send(JSON.stringify({ type: "hello", token: window.token, protocolVersion: PROTOCOL_VERSION }))
       })
       ws.on("message", (data) => {
-        const m = JSON.parse(String(data)) as EditorMessage
+        if (failed) return
+        let m: EditorMessage
+        try {
+          const value: unknown = JSON.parse(String(data))
+          if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid message")
+          m = value as EditorMessage
+        } catch {
+          fail("The editor sent an invalid message.")
+          return
+        }
         if (m.type === "welcome") {
+          if (welcomed) return
+          if (generation !== this.generation) return fail("The connection was closed.")
           welcomed = true
+          clearTimeout(timer)
           this.ws = ws
           resolve(ws)
         } else if (m.type === "rejected") {
-          reject(new RelayError("no_editor", m.reason))
-        } else if (m.type === "result") {
+          fail(m.reason)
+        } else if (welcomed && m.type === "result") {
           const p = settle(m.id)
           // The call returned before our cancellation reached the editor, so the agent will never
           // see this report. Hand it back to be delivered with the next one.
           if (p?.cancelled && REPORTING.has(p.tool)) ws.send(JSON.stringify({ type: "return", report: m.result }))
           p?.resolve(m.result)
-        } else if (m.type === "error") {
+        } else if (welcomed && m.type === "error") {
           settle(m.id)?.reject(new RelayError(m.code, m.message))
         }
       })
       ws.on("error", (e) => {
-        if (!welcomed) reject(new RelayError("no_editor", `Couldn't connect to the editor: ${e.message}`))
+        if (!welcomed) fail(`Couldn't connect to the editor: ${e.message}`)
       })
       ws.on("close", () => {
+        clearTimeout(timer)
+        this.sockets.delete(ws)
         if (this.ws === ws) this.ws = null
-        if (!welcomed) reject(new RelayError("no_editor", "The editor closed the connection."))
-        for (const p of this.pending.values()) {
+        if (!welcomed) fail("The editor closed the connection.")
+        for (const [id, p] of this.pending) {
+          if (p.ws !== ws) continue
+          this.pending.delete(id)
+          p.cleanup()
           p.reject(new RelayError("no_editor", "The editor disconnected. If its window was reloaded, start a new session."))
         }
-        this.pending.clear()
       })
     })
   }
+}
+
+/** A caller's cancellation must not abort other callers' shared connection attempt. */
+function waitForConnection(connection: Promise<WebSocket>, signal?: AbortSignal): Promise<WebSocket> {
+  if (!signal) return connection
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(new RelayError("cancelled", "The call was cancelled."))
+    signal.addEventListener("abort", abort, { once: true })
+    if (signal.aborted) abort()
+    void connection.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort))
+  })
 }

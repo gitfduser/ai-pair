@@ -353,7 +353,9 @@ export class VsCodeEditor implements EditorPort, vscode.Disposable {
       return
     }
 
-    if (before === undefined || !this.inWorkspace(file)) return
+    // Sessions can work in any workspace folder, or use an absolute path outside them.
+    // Every tracked local document must report changes so playback never uses stale offsets.
+    if (before === undefined) return
     if (this.byProgrammer(e, after)) this.controller?.userEdit(file, before, after, changes)
     else this.controller?.otherEdit(file, before, after, changes)
   }
@@ -580,7 +582,7 @@ export class VsCodeEditor implements EditorPort, vscode.Disposable {
   }
 
   private inWorkspace(file: string): boolean {
-    return !path.relative(this.root, file).startsWith("..")
+    return (vscode.workspace.workspaceFolders ?? []).some((folder) => withinFolder(folder.uri.fsPath, file) !== undefined)
   }
 
   private openDocument(file: string): vscode.TextDocument | undefined {
