@@ -77,12 +77,15 @@ it("cancels while awaiting welcome without sending the call or cancelling anothe
   expect(calls).toEqual([{ task: "other" }])
 })
 
-it("times out an upgraded silent endpoint and falls back to a working editor", async () => {
+it.each(["silent", "rejected"])("closes a %s endpoint and falls back to a working editor", async (response) => {
   let silentHello = 0
   let disconnected!: () => void
   const closed = new Promise<void>((resolve) => { disconnected = resolve })
   const silent = await window("stale", 2, (ws) => {
-    ws.on("message", () => { silentHello++ })
+    ws.on("message", () => {
+      silentHello++
+      if (response === "rejected") ws.send(JSON.stringify({ type: "rejected", reason: "Test rejection" }))
+    })
     ws.once("close", disconnected)
   })
   let goodConnections = 0
@@ -102,7 +105,7 @@ it("times out an upgraded silent endpoint and falls back to a working editor", a
   expect(silent.clients.size).toBe(0)
 }, 8000)
 
-it("closes an in-progress handshake without trying the next window", async () => {
+it.each([false, true])("closes an in-progress handshake cleanly with reconnect=%s", async (reconnect) => {
   let receivedHello!: () => void
   const hello = new Promise<void>((resolve) => { receivedHello = resolve })
   let disconnected!: () => void
@@ -112,14 +115,25 @@ it("closes an in-progress handshake without trying the next window", async () =>
     ws.once("close", disconnected)
   })
   let fallbackConnections = 0
-  await window("fallback", 1, () => { fallbackConnections++ })
+  await window("fallback", 1, (ws) => {
+    fallbackConnections++
+    ws.on("message", (data) => {
+      const message = JSON.parse(String(data))
+      if (message.type === "hello") ws.send(JSON.stringify({ type: "welcome" }))
+      if (message.type === "call") ws.send(JSON.stringify({ type: "result", id: message.id, result: "reconnected" }))
+    })
+  })
   const editor = link()
   const pending = editor.call("start", {})
   const rejection = expect(pending).rejects.toMatchObject({ code: "no_editor" })
   await hello
   editor.close()
+  fs.unlinkSync(path.join(dir, "stale.json"))
+  const restarted = reconnect ? editor.call("start", {}) : undefined
+  const recovery = restarted && expect(restarted).resolves.toBe("reconnected")
   await rejection
+  await recovery
   await closed
   expect(silent.clients.size).toBe(0)
-  expect(fallbackConnections).toBe(0)
+  expect(fallbackConnections).toBe(reconnect ? 1 : 0)
 })
