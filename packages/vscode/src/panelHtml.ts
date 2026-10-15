@@ -8,6 +8,9 @@ import { randomBytes } from "node:crypto"
 /** Speeds offered in the panel's menu. The `aiPair.speed` setting takes any value. */
 export const SPEEDS = [0.4, 0.6, 1, 1.5, 2, 3]
 
+/** How many entries the history keeps, live and replayed. */
+export const MAX_LOG = 400
+
 const svg = (paths: string, cls = "") =>
   `<svg class="i ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`
 
@@ -314,7 +317,7 @@ export function panelHtml(cspSource: string): string {
   function add(el) {
     ui.history.prepend(el);
     // Bound retained live history as well as the extension's replay log.
-    while (ui.history.childElementCount > 400) ui.history.lastElementChild.remove();
+    while (ui.history.childElementCount > ${MAX_LOG}) ui.history.lastElementChild.remove();
     return el;
   }
 

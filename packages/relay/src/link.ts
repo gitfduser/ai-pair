@@ -185,6 +185,8 @@ export class EditorLink {
       this.sockets.add(ws)
       let welcomed = false
       let failed = false
+      /** Why the editor ended the connection after welcoming it, if it said. */
+      let rejection: string | undefined
       const fail = (message: string) => {
         if (welcomed || failed) return
         failed = true
@@ -223,7 +225,8 @@ export class EditorLink {
           this.ws = ws
           resolve(ws)
         } else if (m.type === "rejected") {
-          fail(m.reason)
+          if (welcomed) rejection = m.reason
+          else fail(m.reason)
         } else if (welcomed && m.type === "result") {
           const p = settle(m.id)
           // The call returned before our cancellation reached the editor, so the agent will never
@@ -246,7 +249,9 @@ export class EditorLink {
           if (p.ws !== ws) continue
           this.pending.delete(id)
           p.cleanup()
-          p.reject(new RelayError("no_editor", "The editor disconnected. If its window was reloaded, start a new session."))
+          p.reject(new RelayError("no_editor", rejection
+            ? `The editor ended the connection: ${rejection}`
+            : "The editor disconnected. If its window was reloaded, start a new session."))
         }
       })
     })

@@ -137,3 +137,20 @@ it.each([false, true])("closes an in-progress handshake cleanly with reconnect=%
   expect(silent.clients.size).toBe(0)
   expect(fallbackConnections).toBe(reconnect ? 1 : 0)
 })
+
+it("tells pending calls why the editor rejected the connection after welcoming it", async () => {
+  await window("editor", 1, (ws) => {
+    ws.on("message", (data) => {
+      const message = JSON.parse(String(data))
+      if (message.type === "hello") ws.send(JSON.stringify({ type: "welcome" }))
+      if (message.type === "call") {
+        ws.send(JSON.stringify({ type: "rejected", reason: "A call with this ID is already pending." }))
+        ws.close()
+      }
+    })
+  })
+  await expect(link().call("listen", {})).rejects.toMatchObject({
+    code: "no_editor",
+    message: "The editor ended the connection: A call with this ID is already pending.",
+  })
+})

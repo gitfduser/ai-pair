@@ -1386,3 +1386,16 @@ describe("changes by others, while batches are queued", () => {
     expect([...first.batches, ...rest.batches].map((b) => b.status)).toEqual(["interrupted", "discarded"])
   })
 })
+
+describe("involves", () => {
+  it("covers the session's working directory and the files it reads, nothing else", async () => {
+    const { controller } = setup({ "/elsewhere/notes.txt": "a", "/other/read.ts": "b" })
+    const abs = (p: string) => nodePath.resolve(p)
+    expect(controller.involves(abs("/work/x.ts"))).toBe(false)
+    await controller.start(undefined, abs("/work"))
+    expect(controller.involves(abs("/work/x.ts"))).toBe(true)
+    expect(controller.involves(abs("/elsewhere/notes.txt"))).toBe(false)
+    await controller.read(abs("/other/read.ts"))
+    expect(controller.involves(abs("/other/read.ts"))).toBe(true)
+  })
+})

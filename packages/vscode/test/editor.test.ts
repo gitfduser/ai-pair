@@ -42,20 +42,36 @@ beforeEach(() => {
   mock.changed = undefined
 })
 
-it.each(["/work/A/x.txt", "/work/B/x.txt", "/outside/x.txt"])(
-  "reports programmer edits in tracked file %s", (file) => {
-    let text = "hello"
-    const doc = { uri: { scheme: "file", fsPath: file }, isDirty: true, getText: () => text }
-    mock.documents = [doc]
-    const editor = new VsCodeEditor("/work/A", "Agent")
-    const userEdit = vi.fn()
-    editor.controller = { userEdit } as unknown as Controller
-    text = "// mine\nhello"
-    mock.changed!({ document: doc, contentChanges: [{ rangeOffset: 0, rangeLength: 0, text: "// mine\n" }] })
-    expect(userEdit).toHaveBeenCalledWith(file, "hello", text, [{ offset: 0, deleteLength: 0, text: "// mine\n" }])
-    editor.dispose()
-  },
-)
+function edited(file: string, involves: (file: string) => boolean) {
+  let text = "hello"
+  const doc = { uri: { scheme: "file", fsPath: file }, isDirty: true, getText: () => text }
+  mock.documents = [doc]
+  const editor = new VsCodeEditor("/work/A", "Agent")
+  const userEdit = vi.fn()
+  editor.controller = { userEdit, involves } as unknown as Controller
+  text = "// mine\nhello"
+  mock.changed!({ document: doc, contentChanges: [{ rangeOffset: 0, rangeLength: 0, text: "// mine\n" }] })
+  editor.dispose()
+  return { userEdit, text }
+}
+
+it.each(["/work/A/x.txt", "/work/B/x.txt"])("reports programmer edits in workspace file %s", (file) => {
+  const { userEdit, text } = edited(file, () => false)
+  expect(userEdit).toHaveBeenCalledWith(file, "hello", text, [{ offset: 0, deleteLength: 0, text: "// mine\n" }])
+})
+
+it("reports edits outside the workspace only in files the session works with", () => {
+  expect(edited("/outside/x.txt", () => false).userEdit).not.toHaveBeenCalled()
+  expect(edited("/outside/x.txt", (file) => file === "/outside/x.txt").userEdit).toHaveBeenCalled()
+})
+
+it("names files relative to the first folder only", () => {
+  const editor = new VsCodeEditor("/work/A", "Agent")
+  expect(editor.displayPath("/work/A/src/x.ts")).toBe("src/x.ts")
+  expect(editor.displayPath("/work/B/x.ts")).toBe("/work/B/x.ts")
+  expect(editor.displayPath("/outside/x.ts")).toBe("/outside/x.ts")
+  editor.dispose()
+})
 
 it("shares selections from every current workspace root, including folders added later", () => {
   mock.folders = [{ uri: { fsPath: "/work/A" } }]

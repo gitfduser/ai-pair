@@ -185,7 +185,8 @@ export class VsCodeEditor implements EditorPort, vscode.Disposable {
   }
 
   displayPath(file: string): string {
-    return this.inWorkspace(file) ? path.relative(this.root, file) : file
+    // Relative paths resolve against the first folder, so only its files can be named relative to it.
+    return withinFolder(this.root, file) !== undefined ? path.relative(this.root, file) : file
   }
 
   async getText(file: string): Promise<string> {
@@ -353,9 +354,9 @@ export class VsCodeEditor implements EditorPort, vscode.Disposable {
       return
     }
 
-    // Sessions can work in any workspace folder, or use an absolute path outside them.
-    // Every tracked local document must report changes so playback never uses stale offsets.
-    if (before === undefined) return
+    // Sessions can work in any workspace folder, or in files outside them by absolute path. Those
+    // report changes so playback never uses stale offsets; other files outside stay private.
+    if (before === undefined || !(this.inWorkspace(file) || this.controller?.involves(file))) return
     if (this.byProgrammer(e, after)) this.controller?.userEdit(file, before, after, changes)
     else this.controller?.otherEdit(file, before, after, changes)
   }

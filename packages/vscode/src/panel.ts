@@ -2,7 +2,7 @@
 
 import * as vscode from "vscode"
 import type { Controller, PanelEvent, PanelPort, Ref, SharedSelection } from "@ai-pair/core"
-import { panelHtml } from "./panelHtml"
+import { MAX_LOG, panelHtml } from "./panelHtml"
 
 /** Messages from the webview. */
 type FromPanel =
@@ -22,8 +22,6 @@ type FromPanel =
   | { type: "command"; command: string }
   | { type: "speed"; value: number }
   | { type: "runDecision"; id: number; run: boolean; remember?: boolean }
-
-const MAX_LOG = 400
 
 /** The commands the panel may run: the ones its intro links to. */
 const PANEL_COMMANDS: ReadonlySet<string> = new Set(["aiPair.playDemo", "aiPair.setUpAgent"])

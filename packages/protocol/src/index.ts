@@ -111,7 +111,9 @@ function markerCount(text: string): number {
 
 export type Turn = "agent" | "user"
 
-export type BatchStatus = "completed" | "interrupted" | "failed" | "discarded"
+export const BATCH_STATUSES = ["completed", "interrupted", "failed", "discarded"] as const
+
+export type BatchStatus = (typeof BATCH_STATUSES)[number]
 
 export type ErrorKind =
   | "no_line"

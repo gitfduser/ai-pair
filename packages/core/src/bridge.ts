@@ -6,6 +6,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { WebSocketServer, type WebSocket } from "ws"
 import {
+  BATCH_STATUSES,
   PROTOCOL_VERSION,
   ToolError,
   type Action,
@@ -20,7 +21,12 @@ export type BridgeOptions = {
   /** Where discovery files live; see `discoveryDir()`. */
   dir: string
   workspaceFolders: () => string[]
+  /** The largest message a relay may send, in bytes. Defaults to `DEFAULT_MAX_PAYLOAD`. */
+  maxPayload?: number
 }
+
+/** Generous for any report or batch of typing, yet bounded: frames arrive before authentication. */
+export const DEFAULT_MAX_PAYLOAD = 16 * 1024 * 1024
 
 export class Bridge {
   private server?: WebSocketServer
@@ -40,7 +46,7 @@ export class Bridge {
   }
 
   async start(): Promise<void> {
-    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0, maxPayload: this.options.maxPayload ?? DEFAULT_MAX_PAYLOAD })
     this.server = server
     await new Promise<void>((resolve, reject) => {
       server.once("listening", resolve)
@@ -99,28 +105,22 @@ export class Bridge {
     ws.on("error", () => ws.terminate())
 
     ws.on("message", (data) => {
-      let m: RelayMessage
+      let value: unknown
       try {
-        const value: unknown = JSON.parse(String(data))
-        if (!relayMessage(value)) {
-          reject("Invalid pairing message.")
-          return
-        }
-        m = value
+        value = JSON.parse(String(data))
       } catch {
-        reject("Invalid pairing message.")
-        return
+        value = undefined
       }
       if (!authenticated) {
-        if (m.type !== "hello" || !this.tokenMatches(m.token)) {
-          send({ type: "rejected", reason: "Authentication failed." })
-          ws.close()
-        } else if (m.protocolVersion !== PROTOCOL_VERSION) {
-          send({
-            type: "rejected",
-            reason: `Protocol version mismatch (editor ${PROTOCOL_VERSION}, relay ${m.protocolVersion}). The extension was updated: reload the VS Code window and restart the agent.`,
-          })
-          ws.close()
+        // Only a cheap check before the token is: deeper validation would let any local process make us work.
+        if (!hello(value)) {
+          reject("Invalid pairing message.")
+        } else if (!this.tokenMatches(value.token)) {
+          reject("Authentication failed.")
+        } else if (value.protocolVersion !== PROTOCOL_VERSION) {
+          reject(
+            `Protocol version mismatch (editor ${PROTOCOL_VERSION}, relay ${value.protocolVersion}). The extension was updated: reload the VS Code window and restart the agent.`,
+          )
         } else {
           authenticated = true
           clearTimeout(helloTimer)
@@ -128,6 +128,15 @@ export class Bridge {
         }
         return
       }
+      // An authenticated relay's malformed message ends neither its session nor its other calls:
+      // a call gets an error, anything else is dropped.
+      if (!relayMessage(value)) {
+        if (object(value) && value.type === "call" && callId(value.id) && !calls.has(value.id)) {
+          send({ type: "error", id: value.id, code: "invalid_arguments", message: "Invalid call." })
+        }
+        return
+      }
+      const m = value
       if (m.type === "cancel") {
         calls.get(m.id)?.abort()
       } else if (m.type === "return") {
@@ -201,6 +210,10 @@ export class Bridge {
   }
 }
 
+function hello(value: unknown): value is Extract<RelayMessage, { type: "hello" }> {
+  return object(value) && value.type === "hello" && typeof value.token === "string" && typeof value.protocolVersion === "number"
+}
+
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }
@@ -209,18 +222,14 @@ function callId(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 1
 }
 
-/** Validate the envelope before an unauthenticated peer can reach any property access. */
+/** An authenticated relay's message. A call's tool isn't checked here: `dispatch` answers unknown ones. */
 function relayMessage(value: unknown): value is RelayMessage {
   if (!object(value)) return false
   switch (value.type) {
-    case "hello":
-      return typeof value.token === "string" && typeof value.protocolVersion === "number"
     case "cancel":
       return callId(value.id)
     case "call":
-      return callId(value.id) && typeof value.tool === "string" &&
-        ["start", "step", "listen", "end", "read"].includes(value.tool) &&
-        (value.args === undefined || object(value.args))
+      return callId(value.id) && typeof value.tool === "string" && (value.args === undefined || object(value.args))
     case "return":
       return returnedReport(value.report)
     default:
@@ -232,7 +241,7 @@ function relayMessage(value: unknown): value is RelayMessage {
 function returnedReport(value: unknown): boolean {
   if (!object(value) || (value.turn !== "agent" && value.turn !== "user")) return false
   return Array.isArray(value.batches) && value.batches.every((batch: unknown) => {
-    if (!object(batch) || !callId(batch.id) || !["completed", "interrupted", "failed", "discarded"].includes(String(batch.status))) return false
+    if (!object(batch) || !callId(batch.id) || !(BATCH_STATUSES as readonly unknown[]).includes(batch.status)) return false
     if (batch.code !== undefined && !code(batch.code)) return false
     return true
   }) && Array.isArray(value.events) && value.events.every((event: unknown) => {

@@ -5,6 +5,7 @@ import type { Action, BatchResult, Event, Excerpt, FileContent, Report, Turn } f
 import { actionKinds, CURSOR_MARKER, ToolError } from "@ai-pair/protocol"
 import { fileDiff } from "./diff"
 import { LineIds, type Sighting } from "./lines"
+import { withinFolder } from "./paths"
 import { agentPath, displayPath, Player, type Scene } from "./player"
 import type { AgentState, Change, CursorView, EditorPort, PanelPort, Ref, SharedSelection } from "./ports"
 import { followChange, rehearse, type Rehearsal } from "./rehearsal"
@@ -433,6 +434,26 @@ export class Controller {
 
   get isActive(): boolean {
     return this.activeSession() !== null
+  }
+
+  /**
+   * Whether the active session works with `file`: it's under the session's working directory, or
+   * the session has read it, played in it or plans to. The editor reports edits to these files even
+   * outside the workspace.
+   */
+  involves(file: string): boolean {
+    const s = this.activeSession()
+    if (!s) return false
+    const { root, cursor, point } = s.scene
+    return (
+      (root !== undefined && withinFolder(root, file) !== undefined) ||
+      s.lines.has(file) ||
+      s.seen.has(file) ||
+      s.baselines.has(file) ||
+      cursor?.file === file ||
+      point?.file === file ||
+      s.queue.some((b) => b.after?.edits.has(file))
+    )
   }
 
   get isPaused(): boolean {

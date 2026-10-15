@@ -34,6 +34,8 @@ export function activate(context: vscode.ExtensionContext): Api {
   const bridge = new Bridge(controller, {
     dir: discoveryDir(),
     workspaceFolders: () => (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
+    // The schema's bounds only guide the Settings UI; a hand-edited value can be anything.
+    maxPayload: Math.min(100, Math.max(1, Number(config().get("maxMessageMB", 16)) || 16)) * 1024 * 1024,
   })
   const ready = bridge.start()
   ready.catch((e: unknown) => void vscode.window.showErrorMessage(`AI Pair couldn't start its local server: ${String(e)}`))

@@ -52,18 +52,69 @@ it.each(["null", "[]", "42", '"hello"', "{", '{"type":"hello"}']) (
   },
 )
 
+it("rejects a well-formed hello with the wrong token", async () => {
+  const ws = await connect()
+  const reply = message(ws)
+  ws.send(JSON.stringify({ type: "hello", token: "wrong", protocolVersion: PROTOCOL_VERSION }))
+  await expect(reply).resolves.toEqual({ type: "rejected", reason: "Authentication failed." })
+})
+
 it.each([
   { type: "call", id: 0, tool: "start", args: {} },
-  { type: "call", id: 1, tool: "start", args: [] },
   { type: "cancel", id: "1" },
+  { type: "hello", token: "again", protocolVersion: PROTOCOL_VERSION },
   { type: "return", report: null },
   { type: "return", report: { turn: "agent", batches: [null], events: [] } },
   { type: "return", report: { turn: "agent", batches: [], events: [null] } },
   { type: "return", report: { turn: "agent", batches: [{ id: 1, status: "completed", code: { file: "x", lines: [null] } }], events: [] } },
-])("rejects malformed authenticated envelopes %#", async (input) => {
+])("drops a malformed authenticated message without closing the connection %#", async (input) => {
+  const ws = await connect()
+  await authenticate(ws)
+  ws.send(JSON.stringify(input))
+  const reply = message(ws)
+  ws.send(JSON.stringify({ type: "call", id: 7, tool: "listen", args: {} }))
+  await expect(reply).resolves.toMatchObject({ type: "error", id: 7, code: "no_session" })
+})
+
+it.each([
+  { type: "call", id: 3, tool: "start", args: [] },
+  { type: "call", id: 3, tool: 42, args: {} },
+])("answers a malformed call with an error for its ID %#", async (input) => {
   const ws = await connect()
   await authenticate(ws)
   const reply = message(ws)
   ws.send(JSON.stringify(input))
-  await expect(reply).resolves.toEqual({ type: "rejected", reason: "Invalid pairing message." })
+  await expect(reply).resolves.toEqual({ type: "error", id: 3, code: "invalid_arguments", message: "Invalid call." })
+})
+
+it("answers an unknown tool with an error and keeps the session", async () => {
+  const ws = await connect()
+  await authenticate(ws)
+  let reply = message(ws)
+  ws.send(JSON.stringify({ type: "call", id: 1, tool: "start", args: {} }))
+  await expect(reply).resolves.toMatchObject({ type: "result", id: 1 })
+  reply = message(ws)
+  ws.send(JSON.stringify({ type: "call", id: 2, tool: "rewind", args: {} }))
+  await expect(reply).resolves.toEqual({ type: "error", id: 2, code: "invalid_arguments", message: "Unknown tool: rewind" })
+  expect(ws.readyState).toBe(WebSocket.OPEN)
+})
+
+it("closes a connection whose message exceeds the configured size", async () => {
+  const small = new Bridge(new Controller(new FakeEditor(), new FakePanel(), testConfig), {
+    dir: fs.mkdtempSync(path.join(os.tmpdir(), "ai-pair-bridge-small-")),
+    workspaceFolders: () => ["/project"],
+    maxPayload: 1024,
+  })
+  await small.start()
+  try {
+    const { port: smallPort } = JSON.parse(fs.readFileSync(small.file, "utf8"))
+    const ws = new WebSocket(`ws://127.0.0.1:${smallPort}`)
+    sockets.push(ws)
+    await new Promise<void>((resolve, reject) => { ws.once("open", resolve); ws.once("error", reject) })
+    const closed = new Promise<number>((resolve) => ws.once("close", (code) => resolve(code)))
+    ws.send(JSON.stringify({ type: "hello", token: "x".repeat(2048), protocolVersion: PROTOCOL_VERSION }))
+    await expect(closed).resolves.toBe(1009)
+  } finally {
+    small.dispose()
+  }
 })

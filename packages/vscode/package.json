@@ -135,6 +135,14 @@
           "default": true,
           "scope": "application",
           "markdownDescription": "Ask in the Pair panel before running each command the agent plays in the terminal (`run`). Turning this off lets the agent run commands without Claude Code's own permission prompt."
+        },
+        "aiPair.maxMessageMB": {
+          "type": "number",
+          "default": 16,
+          "minimum": 1,
+          "maximum": 100,
+          "scope": "application",
+          "markdownDescription": "The largest message an agent's connection may send the editor, in megabytes. Larger ones close the connection. Takes effect when the window reloads."
         }
       }
     },

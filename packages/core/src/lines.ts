@@ -75,6 +75,11 @@ export class LineIds {
     return this.version(file, text).ids
   }
 
+  /** Whether it, or the editor's it copies, tracks the file. */
+  has(file: string): boolean {
+    return this.versions.has(file) || (this.base?.has(file) ?? false)
+  }
+
   /** Follows a change to a file, if it tracks the file. Call `of` with the text before it first. */
   apply(file: string, change: Change): void {
     const v = this.versions.get(file)
