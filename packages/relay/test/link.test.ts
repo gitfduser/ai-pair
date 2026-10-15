@@ -34,7 +34,8 @@ async function window(name: string, focused: number, connected: (ws: WebSocket) 
 }
 
 function link(): EditorLink {
-  const value = new EditorLink("/project", dir)
+  // A short handshake, so endpoints that never welcome fail fast.
+  const value = new EditorLink("/project", dir, 200)
   links.push(value)
   return value
 }
@@ -103,7 +104,7 @@ it.each(["silent", "rejected"])("closes a %s endpoint and falls back to a workin
   // The failed candidate is terminated, rather than retained alongside the working socket.
   await closed
   expect(silent.clients.size).toBe(0)
-}, 8000)
+})
 
 it.each([false, true])("closes an in-progress handshake cleanly with reconnect=%s", async (reconnect) => {
   let receivedHello!: () => void

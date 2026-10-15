@@ -142,7 +142,7 @@
           "minimum": 1,
           "maximum": 100,
           "scope": "application",
-          "markdownDescription": "The largest message an agent's connection may send the editor, in megabytes. Larger ones close the connection. Takes effect when the window reloads."
+          "markdownDescription": "The largest message an agent's connection may send the editor, in megabytes. Larger ones close the connection. A change applies to connections made after it: an agent already connected keeps its limit until it reconnects."
         }
       }
     },

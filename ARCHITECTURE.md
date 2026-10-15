@@ -98,6 +98,19 @@ MCP tool calls one to one:
 - `return { report }`: a report that arrived for a call the relay had already
   cancelled, handed back to be delivered again (see below).
 
+**The extension trusts nothing before the token.** Until a relay authenticates,
+it accepts only a well-formed `hello`, checked cheaply; anything else gets
+`rejected` and the connection closes. Messages are bounded by
+`aiPair.maxMessageMB` (16 MB by default), checked before they're read; a
+larger one closes the connection.
+
+**A bad message from an authenticated relay doesn't end the session.** A
+malformed call gets an `invalid_arguments` error for its ID, an unknown tool
+gets the same, and any other malformed message is dropped. The one exception
+is a call reusing the ID of a pending one, which means the relay is broken: the
+extension rejects and closes, and the relay fails the pending calls with the
+reason it gave.
+
 **Cancelling a call doesn't affect the session.** A cancelled `step` has
 already queued its batch, and its outcome is reported on the next call.
 Cancellation just releases the blocked call, without taking a report.
@@ -135,6 +148,12 @@ Outside a session, pair tools other than `start` fail with `no_session`, so an
 agent can't accidentally drive the editor when the programmer isn't pairing.
 The programmer's edits between sessions aren't tracked. A new session starts
 fresh, and the agent should re-read what it needs.
+
+**Edits outside the workspace stay private.** During a session, the
+programmer's edits in any workspace folder are reported. Outside them, only
+edits to files the session works with are: under the agent's working
+directory, or files it has read, typed in or plans to. A note or a `.env` open
+from elsewhere never reaches the agent.
 
 The panel keeps each session's narration history. Between sessions it shows
 "No active session", and how to start one.

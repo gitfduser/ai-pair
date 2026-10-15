@@ -175,6 +175,28 @@ export async function run(): Promise<void> {
   await c.end()
   console.log("multi-root programmer edits interrupt playback")
 
+  // Edits to a file outside the workspace stay private, unless the session works with that file.
+  const outsideDir = fs.mkdtempSync(path.join(path.dirname(root), "outside-"))
+  const outsideFile = path.join(outsideDir, "notes.txt")
+  fs.writeFileSync(outsideFile, "private\n")
+  const outsideDoc = await vscode.workspace.openTextDocument(outsideFile)
+  await c.start("outside edits")
+  const privateStep = await c.step([{ move: { file: "private.ts", line: 1, to: "line_end" } }, { type: `${alphabet}▌` }])
+  assert.equal(privateStep.rejected, undefined)
+  // Still typing when the programmer edits the private file: the batch must complete regardless.
+  const privatePending = c.step([])
+  await sleep(1500)
+  await insertAsProgrammer(outsideDoc.uri, new vscode.Position(0, 0), "secret ")
+  const privateReport = await privatePending
+  assert.deepEqual(privateReport.batches.map((b) => b.status), ["completed"])
+  assert.deepEqual(privateReport.events, [])
+  await c.read(outsideFile)
+  await insertAsProgrammer(outsideDoc.uri, new vscode.Position(0, 0), "shared ")
+  const sharedReport = await c.step([])
+  assert.deepEqual(sharedReport.events.map((e) => e.kind === "edit" && `${e.file} ${e.by}`), [`${outsideFile} programmer`])
+  await c.end()
+  console.log("edits outside the workspace are reported only for files the session works with")
+
   // An agent connecting the way a harness does: the launcher, over stdio, from the project folder.
   await api.ready
   const transport = new StdioClientTransport({

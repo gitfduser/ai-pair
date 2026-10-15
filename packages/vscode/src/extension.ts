@@ -13,6 +13,8 @@ export type Api = { controller: Controller; playDemo: () => Promise<void>; launc
 export function activate(context: vscode.ExtensionContext): Api {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir()
   const config = () => vscode.workspace.getConfiguration("aiPair")
+  // The schema's bounds only guide the Settings UI; a hand-edited value can be anything.
+  const maxPayload = () => Math.min(100, Math.max(1, Number(config().get("maxMessageMB", 16)) || 16)) * 1024 * 1024
 
   const editor = new VsCodeEditor(root, config().get("agentName", "Agent"))
   const speed = {
@@ -34,8 +36,7 @@ export function activate(context: vscode.ExtensionContext): Api {
   const bridge = new Bridge(controller, {
     dir: discoveryDir(),
     workspaceFolders: () => (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
-    // The schema's bounds only guide the Settings UI; a hand-edited value can be anything.
-    maxPayload: Math.min(100, Math.max(1, Number(config().get("maxMessageMB", 16)) || 16)) * 1024 * 1024,
+    maxPayload: maxPayload(),
   })
   const ready = bridge.start()
   ready.catch((e: unknown) => void vscode.window.showErrorMessage(`AI Pair couldn't start its local server: ${String(e)}`))
@@ -60,6 +61,7 @@ export function activate(context: vscode.ExtensionContext): Api {
       }
       if (e.affectsConfiguration("aiPair.timing")) controller.setTiming(config().get("timing", {}))
       if (e.affectsConfiguration("aiPair.agentName")) editor.setAgentName(config().get("agentName", "Agent"))
+      if (e.affectsConfiguration("aiPair.maxMessageMB")) bridge.setMaxPayload(maxPayload())
       if (e.affectsConfiguration("aiPair.confirmCommands")) {
         controller.setConfirmCommands(config().get("confirmCommands", true))
       }

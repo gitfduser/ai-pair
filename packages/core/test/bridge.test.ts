@@ -118,3 +118,11 @@ it("closes a connection whose message exceeds the configured size", async () => 
     small.dispose()
   }
 })
+
+it("applies a changed size limit to new connections", async () => {
+  bridge.setMaxPayload(1024)
+  const ws = await connect()
+  const closed = new Promise<number>((resolve) => ws.once("close", (code) => resolve(code)))
+  ws.send(JSON.stringify({ type: "hello", token: "x".repeat(2048), protocolVersion: PROTOCOL_VERSION }))
+  await expect(closed).resolves.toBe(1009)
+})

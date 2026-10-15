@@ -104,6 +104,8 @@ export class EditorLink {
   constructor(
     cwd: string,
     private readonly dir: string,
+    /** How long an editor gets to accept the connection and welcome it. */
+    private readonly handshakeMs = HANDSHAKE_MS,
   ) {
     this.folder = cwd
   }
@@ -181,7 +183,7 @@ export class EditorLink {
 
   private openWindow(window: Discovery, generation: number): Promise<WebSocket> {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${window.port}`, { handshakeTimeout: HANDSHAKE_MS })
+      const ws = new WebSocket(`ws://127.0.0.1:${window.port}`, { handshakeTimeout: this.handshakeMs })
       this.sockets.add(ws)
       let welcomed = false
       let failed = false
@@ -195,7 +197,7 @@ export class EditorLink {
         ws.terminate()
       }
       // ws.handshakeTimeout ends at HTTP upgrade. Also bound hello/welcome.
-      const timer = setTimeout(() => fail("The editor did not complete the pairing handshake."), HANDSHAKE_MS)
+      const timer = setTimeout(() => fail("The editor did not complete the pairing handshake."), this.handshakeMs)
       const settle = (id: number) => {
         const p = this.pending.get(id)
         if (p?.ws !== ws) return undefined

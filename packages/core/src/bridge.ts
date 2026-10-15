@@ -58,6 +58,15 @@ export class Bridge {
     this.writeDiscovery()
   }
 
+  /**
+   * Changes the largest message a relay may send. ws reads it at each upgrade, so it applies to
+   * connections made from now on, without restarting the server or dropping a session; a relay
+   * already connected keeps the limit it connected with.
+   */
+  setMaxPayload(bytes: number): void {
+    if (this.server) this.server.options.maxPayload = bytes
+  }
+
   /** Call when the window gains focus, so relays prefer it among windows with the same folder. */
   focused(): void {
     this.lastFocused = Date.now()
